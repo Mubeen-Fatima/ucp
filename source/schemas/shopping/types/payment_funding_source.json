@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ucp.dev/schemas/shopping/types/payment_funding_source.json",
+  "title": "Payment Funding Source",
+  "description": "A credential type that directly represents an underlying real-world payment instrument (e.g., a card, a bank account). Funding sources are a subset of credentials. Wrapping credentials such as provider tokens are NOT funding sources — they convey a funding source rather than being one. Concrete funding-source credential schemas (e.g., `card_fpan_credential.json`) inherit from this schema; consumers can identify funding-source credential types by checking that ancestry rather than via an out-of-band annotation.",
+  "allOf": [
+    { "$ref": "payment_credential.json" }
+  ]
+}

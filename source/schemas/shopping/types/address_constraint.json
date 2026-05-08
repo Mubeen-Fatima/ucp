@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ucp.dev/schemas/shopping/types/address_constraint.json",
+  "title": "Address Constraint",
+  "description": "Constraint on a postal address. Reusable across UCP — payments uses this for billing addresses, fulfillment can reuse it for shipping addresses. The requirement of the address field itself is owned by the parent's `required_fields` (e.g., an instrument constraint listing `\"billing_address\"` in its own `required_fields`); this object only describes what fields of the address must be populated when the address is present.",
+  "allOf": [
+    { "$ref": "constraint.json" },
+    {
+      "type": "object",
+      "properties": {
+        "required_fields": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "street_address",
+              "extended_address",
+              "address_locality",
+              "address_region",
+              "address_country",
+              "postal_code",
+              "first_name",
+              "last_name",
+              "phone_number"
+            ]
+          },
+          "uniqueItems": true
+        }
+      }
+    }
+  ],
+  "examples": [
+    { "required_fields": ["postal_code", "address_country"] },
+    {
+      "required_fields": [
+        "street_address",
+        "address_locality",
+        "address_region",
+        "postal_code",
+        "address_country"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ucp.dev/schemas/shopping/types/constraint.json",
+  "title": "Constraint",
+  "description": "The universal shape of a constraint object in UCP. Any constraint, on any field, on any object, is structured this way: a `required_fields` list naming properties of the constrained object that MUST be present, plus optional domain-specific custom constraint keys. Concrete constraint schemas (e.g., `address_constraint.json`, `credential_constraint.json`) extend this base and scope `required_fields` to the property names of the object they constrain.",
+  "type": "object",
+  "properties": {
+    "required_fields": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Names of properties on the constrained object that MUST be present. Concrete constraints should contain the actual property names of the constrained schema."
+    }
+  },
+  "additionalProperties": true
+}

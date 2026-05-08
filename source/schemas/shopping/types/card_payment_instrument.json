@@ -6,26 +6,53 @@
   "$defs": {
     "available_card_payment_instrument": {
       "title": "Available Card Payment Instrument",
-      "description": "Declares card instrument availability with card-specific constraints.",
+      "description": "Declares card instrument availability with constraints. The `constraints` object follows the universal constraint shape (`constraint.json`): a `required_fields` list naming top-level instrument properties that MUST be present (e.g., `billing_address`), plus card-specific custom keys (`brands`, `billing_address`, `credentials`, `funding_sources`). The credentials and funding-source axes share `credential_constraint.json` as their item primitive; funding-source entries MUST name credential types whose schema inherits from `payment_funding_source.json`.",
       "allOf": [
         { "$ref": "available_payment_instrument.json" },
         {
           "type": "object",
           "properties": {
-            "type": {
-              "const": "card"
-            },
+            "type": { "const": "card" },
             "constraints": {
-              "type": "object",
-              "properties": {
-                "brands": {
-                  "type": "array",
-                  "items": { "type": "string" },
-                  "minItems": 1,
-                  "uniqueItems": true,
-                  "description": "Limit to specific card brands (e.g., ['visa', 'mastercard', 'amex'])."
+              "allOf": [
+                { "$ref": "constraint.json" },
+                {
+                  "type": "object",
+                  "properties": {
+                    "required_fields": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["billing_address", "credential"]
+                      },
+                      "uniqueItems": true
+                    },
+                    "brands": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "minItems": 1,
+                      "uniqueItems": true,
+                      "description": "Accepted card brands (e.g., ['visa', 'mastercard']). Card brand is a property of the underlying card surfaced via `display.brand`, not a credential field, so it sits at the instrument-constraint level."
+                    },
+                    "billing_address": {
+                      "$ref": "address_constraint.json",
+                      "description": "Constraint on the instrument's `billing_address` field. The address itself is required only when `billing_address` appears in this object's `required_fields`."
+                    },
+                    "credentials": {
+                      "type": "array",
+                      "items": { "$ref": "credential_constraint.json" },
+                      "minItems": 1,
+                      "description": "Credential wire shapes the handler accepts. Constraints here describe the wire credential as transmitted."
+                    },
+                    "funding_sources": {
+                      "type": "array",
+                      "items": { "$ref": "credential_constraint.json" },
+                      "minItems": 1,
+                      "description": "Underlying funding sources the handler accepts. Entries MUST reference credential types inheriting from `payment_funding_source.json`. Constraints here describe the underlying instrument regardless of which wire credential conveys it; they are NOT duplicated under `credentials`."
+                    }
+                  }
                 }
-              }
+              ]
             }
           }
         }
@@ -33,9 +60,7 @@
     }
   },
   "allOf": [
-    {
-      "$ref": "payment_instrument.json"
-    },
+    { "$ref": "payment_instrument.json" },
     {
       "type": "object",
       "required": ["type"],
@@ -49,31 +74,12 @@
           "type": "object",
           "description": "Display information for this card payment instrument.",
           "properties": {
-            "brand": {
-              "type": "string",
-              "description": "The card brand/network (e.g., visa, mastercard, amex)."
-            },
-            "last_digits": {
-              "type": "string",
-              "description": "Last 4 digits of the card number."
-            },
-            "expiry_month": {
-              "type": "integer",
-              "description": "The month of the card's expiration date (1-12)."
-            },
-            "expiry_year": {
-              "type": "integer",
-              "description": "The year of the card's expiration date."
-            },
-            "description": {
-              "type": "string",
-              "description": "An optional rich text description of the card to display to the user (e.g., 'Visa ending in 1234, expires 12/2025')."
-            },
-            "card_art": {
-              "type": "string",
-              "format": "uri",
-              "description": "An optional URI to a rich image representing the card (e.g., card art provided by the issuer)."
-            }
+            "brand": { "type": "string", "description": "The card brand/network (e.g., visa, mastercard, amex)." },
+            "last_digits": { "type": "string", "description": "Last 4 digits of the card number." },
+            "expiry_month": { "type": "integer", "description": "The month of the card's expiration date (1-12)." },
+            "expiry_year": { "type": "integer", "description": "The year of the card's expiration date." },
+            "description": { "type": "string", "description": "An optional rich text description of the card to display to the user." },
+            "card_art": { "type": "string", "format": "uri", "description": "An optional URI to a rich image representing the card." }
           }
         }
       }

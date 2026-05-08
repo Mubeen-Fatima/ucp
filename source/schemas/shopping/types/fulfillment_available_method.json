@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ucp.dev/schemas/shopping/types/fulfillment_available_method.json",
   "title": "Fulfillment Available Method",
-  "description": "Inventory availability hint for a fulfillment method type.",
+  "description": "Inventory availability hint for a fulfillment method type, with optional constraints describing what the handler needs to quote or fulfill.",
   "type": "object",
   "ucp_shared_request": true,
   "required": ["type", "line_item_ids"],
@@ -29,6 +29,30 @@
       "type": "string",
       "description": "Human-readable availability info (e.g., 'Available for pickup at Downtown Store today').",
       "ucp_request": "omit"
+    },
+    "constraints": {
+      "allOf": [
+        { "$ref": "constraint.json" },
+        {
+          "type": "object",
+          "properties": {
+            "required_fields": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["destination"]
+              },
+              "uniqueItems": true,
+              "description": "Top-level fulfillment-method properties that MUST be present (e.g., `destination` to require an address before this method can be quoted)."
+            },
+            "destination": {
+              "$ref": "address_constraint.json",
+              "description": "For `shipping`: constraint on the destination postal address — what fields must be populated before the handler can return a meaningful quote (e.g., postal-code-only for fast quoting vs. full address for compliance/routing). Reuses the same `address_constraint` primitive as `card_payment_instrument` billing addresses."
+            }
+          }
+        }
+      ],
+      "description": "Constraints the handler places on this fulfillment method. Follows the universal constraint shape (`constraint.json`)."
     }
   }
 }
