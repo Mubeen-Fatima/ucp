@@ -451,6 +451,499 @@ The platform resolves the recoverable error programmatically while
 rendering the allergen disclosure in proximity to the referenced line
 item.
 
+## Actions
+
+### Overview
+
+An **action** is an imperative directive from a business to a platform
+requesting that the platform perform a scoped interaction — typically
+rendering a URL — and, where the interaction has a return value, attach
+that value to checkout state at a business-specified path. Actions are
+emitted on a top-level `actions` array on the checkout response.
+
+Actions are not messages. Messages describe checkout state and carry
+human-readable content for the buyer; actions are protocol directives
+that carry no buyer-facing content. The two share the severity
+vocabulary so platforms can reason about both through a single
+prioritization stack, but they are distinct primitives with distinct
+shapes.
+
+Actions import scoped iframe-style semantics into non-iframe transports.
+In Embedded Protocol contexts the business already owns a canvas and
+handles equivalent interactions internally via the Embedded Protocol
+delegation pattern — no host-facing `actions` array is emitted there.
+On REST and MCP, actions are the mechanism by which a business can ask
+the platform to render one frame or perform one redirect on its behalf
+without the full handoff implied by `requires_escalation` +
+`continue_url`.
+
+### Opacity Principle
+
+UCP defines the **transport and lifecycle** of actions — how they are
+emitted, rendered, correlated, resolved, and acknowledged. UCP does
+**not** define the semantic shape of what an action URL renders or
+what its result value contains. The capability or handler protocol
+that owns the action's `code` is the authoritative source for both.
+
+Concretely:
+
+* The platform **MUST NOT** inspect, transform, or interpret the
+    rendered content beyond rendering it per `display`.
+* The platform **MUST NOT** inspect, transform, or normalize the
+    `value` returned via `postMessage` or query parameters beyond
+    writing it at `result_path`.
+* The business **MUST NOT** assume the platform can decode or validate
+    PSP- or third-party-specific payloads in transit.
+
+The business is a pass-through at the protocol boundary; the rendered
+URL and the platform's surface together form the SDK for whatever the
+`code` denotes. This is what allows one primitive to carry 3DS
+challenges, captchas, offsite payment authorizations, and future
+interactions without UCP needing to grow a vocabulary for each.
+
+### Capability Commitment
+
+When a platform supports a capability, it implicitly commits to
+executing the **full action surface** that capability and its
+extensions emit, including all `display.form` values listed in this
+specification. Platforms that cannot render a given form (e.g., a
+voice-only agent that cannot render `modal`) **MUST NOT** advertise
+support for capabilities whose normative action sets require it.
+
+This means:
+
+* Businesses **MUST NOT** perform runtime conditional checks asking
+    "does this platform support modals?" before emitting an action.
+* Platforms **MUST NOT** expect runtime renegotiation when an action
+    arrives whose form they cannot render. Their only recourses are
+    (a) escalate via `continue_url` when the action's severity permits
+    it, or (b) treat the inability as a `payment_failed`-shaped
+    recoverable error and let the business pivot.
+* Handler protocols and capability extensions that introduce new
+    action codes inherit this commitment — a platform that supports
+    a payment handler commits to that handler's action surface as a
+    whole.
+
+This mirrors the equivalent rule for payment handlers: a platform that
+completes a checkout with a given handler commits to the handler's
+full runtime contract.
+
+### Action Severity
+
+Actions reuse the error-severity vocabulary with the values that apply
+to imperative directives:
+
+| Severity               | Platform behavior                                                                                                                                                                                                  |
+| :--------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `optional`             | Platform **MAY** complete for better outcomes; non-blocking. Skipping is permitted. Example: a fraud-scoring pixel that improves accuracy but does not gate the transaction.                                       |
+| `recoverable`          | Platform **MUST** complete the action (or resolve through another recoverable path) before the checkout can advance. May be retried. Example: a captcha that gates the next state transition.                     |
+| `requires_buyer_input` | Platform **MUST** complete. If the platform cannot render the action (e.g., a voice-only agent), it **MUST** escalate via `continue_url`. Example: a 3DS challenge or offsite payment authorization.               |
+
+`unrecoverable` and `requires_buyer_review` do not apply to actions. An
+action with no recourse is a contradiction; buyer review is a cognitive
+act, not an interaction.
+
+#### Extended Error Processing Algorithm
+
+When `actions` are present, the prioritized stack from
+[Error Processing Algorithm](#error-processing-algorithm) extends as
+follows. Errors and actions are partitioned separately by source but
+share the severity vocabulary:
+
+```text
+GIVEN response with messages array AND actions array
+
+FILTER errors  FROM messages WHERE type = "error"
+
+errors_unrecoverable     = errors  WHERE severity = unrecoverable
+errors_recoverable       = errors  WHERE severity = recoverable
+actions_recoverable      = actions WHERE severity = recoverable
+errors_requires_input    = errors  WHERE severity = requires_buyer_input
+actions_requires_input   = actions WHERE severity = requires_buyer_input
+errors_requires_review   = errors  WHERE severity = requires_buyer_review
+actions_optional         = actions WHERE severity = optional
+
+IF errors_unrecoverable is not empty
+  RETRY with new resource or inputs, or hand off via continue_url
+  RETURN
+
+IF errors_recoverable is not empty
+  FOR EACH error IN errors_recoverable
+    ATTEMPT to fix programmatically
+  CALL Update Checkout
+  RETURN and re-evaluate
+
+IF actions_recoverable is not empty
+  RENDER each per display; on success, CALL Update Checkout with value at result_path
+  ON cancellation or platform-cannot-render: try alternative recoverable paths or escalate
+  RETURN and re-evaluate
+
+IF actions_optional is not empty
+  RENDER best-effort (e.g., invisible pixels); skipping is permitted
+
+IF actions_requires_input or errors_requires_input or errors_requires_review is not empty
+  RENDER actions per display; for any the platform cannot render, ESCALATE via continue_url
+```
+
+### Action Object
+
+| Field         | Type     | Required | Notes                                                                                                                                                                                                                                              |
+| :------------ | :------- | :------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`          | string   | ✓        | Unique, unguessable identifier for this action. Echoed in the result and used by the platform to correlate the result against the outstanding action. Treat as a capability token: origin checks are defense in depth, not the trust boundary.    |
+| `code`        | string   | ✓        | Reverse-domain identifier for the action category, owned by the capability or handler protocol that defines the action's semantics. See [Action Codes](#action-codes).                                                                              |
+| `severity`    | string   | ✓        | `optional` \| `recoverable` \| `requires_buyer_input`. See [Action Severity](#action-severity).                                                                                                                                                    |
+| `url`         | string   | ✓        | The URL to render or navigate to. **MUST** use the `https` scheme.                                                                                                                                                                                  |
+| `expires_at`  | string   | optional | RFC 3339 timestamp after which the platform **SHOULD** stop rendering the surface and emit a `dev.ucp.action.abandoned` result. When absent, the business imposes no deadline; the platform **MAY** apply its own.                                  |
+| `result_path` | string   | optional | RFC 9535 JSONPath identifying where the platform **MUST** attach the result value in the next `update_checkout` call (e.g., `$.payment.instruments[0].credential`). Omitted for fire-and-forget actions that have no structured return value (e.g., device-data pixels). See [Attaching the Result](#attaching-the-result) for constraints, including the restriction on writing to `$.signals.*`. |
+| `display`     | object   | ✓        | Rendering form and presentation hints. See [Display](#display).                                                                                                                                                                                     |
+
+### Display
+
+The platform **MUST** render the action according to `display.form`. The
+platform **SHOULD** honor `width` and `height` hints when present but
+**MAY** override them for accessibility, responsive layout, or viewport
+constraints.
+
+| Field    | Type    | Required | Notes                                                                                                                                                                       |
+| :------- | :------ | :------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `form`   | string  | ✓        | `invisible` \| `inline` \| `modal` \| `full_page` \| `redirect`. Discriminates result transport — see [Result Transport](#result-transport).                                  |
+| `width`  | integer | optional | Suggested width in CSS pixels. Not meaningful for `invisible` or `redirect`.                                                                                                |
+| `height` | integer | optional | Suggested height in CSS pixels. Not meaningful for `invisible` or `redirect`.                                                                                               |
+
+**Form semantics.** `form` describes the **rendering surface** the
+platform must provide, not the implementing primitive. On the web,
+each form is naturally realized by an iframe (or a top-level
+navigation for `redirect`); on native platforms the equivalent
+surface (in-app browser, modal sheet, system browser handoff) applies.
+The contract is the same regardless of substrate: the surface loads
+`url`, the result returns via the transport in [Result
+Transport](#result-transport), and the security model in
+[Security](#security) applies.
+
+| `form`      | Surface contract                                                                         |
+| :---------- | :--------------------------------------------------------------------------------------- |
+| `invisible` | Mount the URL with no visible presence (offscreen iframe on web, headless webview on native). Appropriate for data-collection pixels. |
+| `inline`    | Render the surface in the checkout layout flow, near the relevant section.               |
+| `modal`     | Render the surface as a modal overlay; block interaction with the rest of checkout.      |
+| `full_page` | Render the surface taking the full viewport; block other checkout UI.                    |
+| `redirect`  | Navigate the buyer's top-level context to the URL; resume checkout via the return-URL contract. |
+
+### Result Transport
+
+The platform delivers the action result back to itself in one of two
+ways, discriminated by whether `display.form === "redirect"`.
+
+#### Frame Transport (postMessage)
+
+Used when `display.form` is `invisible`, `inline`, `modal`, or
+`full_page`. The rendered page **MUST** send a `postMessage` to its
+parent window with the following payload:
+
+**Success:**
+
+```json
+{
+    "ucp": { "version": "{{ ucp_version }}", "status": "success" },
+    "action_id": "act_xyz",
+    "value": "any-json-value-or-null"
+}
+```
+
+**Cancellation or error:**
+
+```json
+{
+    "ucp": { "version": "{{ ucp_version }}", "status": "error" },
+    "action_id": "act_xyz",
+    "messages": [
+        {
+            "type": "error",
+            "code": "dev.ucp.action.abandoned",
+            "content": "Buyer dismissed the challenge.",
+            "severity": "recoverable"
+        }
+    ]
+}
+```
+
+**Standard result codes.** Platforms **MUST** use the following codes
+in the error envelope so businesses can distinguish recovery paths
+without parsing free-form strings. Capability or handler protocols
+**MAY** define additional codes in their own reverse-domain namespace.
+
+| Code                            | Meaning                                                                                          |
+| :------------------------------ | :----------------------------------------------------------------------------------------------- |
+| `dev.ucp.action.abandoned`      | The buyer dismissed the surface, the surface closed without producing a result, or `expires_at` elapsed. The business can re-emit the action, substitute a recoverable path, or escalate. |
+| `dev.ucp.action.failed`         | The surface produced a transport-level error (load failure, network error, sandbox violation). Distinct from a domain-level failure communicated in the success envelope's `value`. |
+| `dev.ucp.action.unsupported`    | The platform cannot render the requested `display.form`. Indicates a capability-commitment violation; the business **SHOULD** escalate to `requires_escalation`. |
+
+Domain-level outcomes (e.g., 3DS authentication failed, captcha
+verification rejected) are **not** transport errors — they belong in
+the success envelope's `value`, shaped by the capability or handler
+protocol that owns the `code`. The error envelope is reserved for
+transport-shaped failures.
+
+**Correlation is the trust boundary.** The `action.id` is an
+unguessable token issued by the business; the platform **MUST** match
+the `action_id` in the postMessage against an outstanding action it
+issued and reject mismatches. Origin checks are defense in depth, not
+the primary control — many real interactions (3DS challenges, third-
+party captcha providers) embed content from a different origin than
+`action.url`, and a strict origin equality check breaks those flows.
+
+Concretely, platforms **MUST**:
+
+* Match `action_id` to an outstanding action; reject otherwise.
+* Sandbox the framed origin per [Security](#security).
+
+And **SHOULD** validate that the `event.origin` is either the origin of
+`action.url` or an origin the business has declared trusted for that
+action's `code` (see the relevant capability or handler protocol). For
+flows where the result is produced by a third-party origin (e.g., 3DS
+ACS), the business is responsible for hosting a same-origin relay on
+the `action.url` origin that re-emits the result via `postMessage` to
+the platform — the third-party origin **MUST NOT** be relied upon to
+post directly to the platform.
+
+#### Redirect Transport (Return URL)
+
+Used when `display.form === "redirect"`. The platform **MUST** append a
+`ucp_return_url` query parameter to `action.url` before navigating. The
+business **MUST** preserve this parameter through any provider redirects
+and, upon completion, navigate the buyer to `ucp_return_url` with the
+following query parameters:
+
+| Parameter        | Required                              | Notes                                                              |
+| :--------------- | :------------------------------------ | :----------------------------------------------------------------- |
+| `ucp_action_id`  | ✓                                     | Echoes `action.id`.                                                |
+| `ucp_status`     | ✓                                     | `success` or `error`.                                              |
+| `ucp_value`      | when `success` and value is non-null  | URL-encoded JSON literal.                                          |
+| `ucp_messages`   | optional                              | URL-encoded JSON array of messages (typically for `error` status). |
+
+Platforms **MUST** validate that the redirect lands on their own origin
+and that `ucp_action_id` matches an outstanding action.
+
+### Attaching the Result
+
+When `result_path` is present, after receiving a successful result the
+platform **MUST** call `update_checkout` with the `value` written at
+`result_path`. When `result_path` is omitted, the action is fire-and-
+forget; the platform completes the interaction and the business
+observes resolution through its own side channels (e.g., webhooks).
+
+`result_path` **MUST NOT** target `$.signals.*` unless the action
+result is an independently verifiable third-party attestation that the
+platform is relaying (the same constraint that applies to all signal
+values; see [Signals](overview.md#signals)). A captcha verification
+token from a recognized captcha provider qualifies; a buyer-asserted
+value collected through the surface does not.
+
+The business **MUST** re-emit the action in subsequent responses until
+it observes the value resolved at `result_path`. Once resolved, the
+business **MUST** omit the action from subsequent responses. This
+implicit acknowledgment via state — rather than an explicit "action
+complete" call — keeps the protocol stateless between transports.
+
+**Correlation and convergence.** Because the platform receives the
+postMessage result before it issues the corresponding `update_checkout`
+call, there is a window during which the business cannot observe that
+the action has been satisfied. The business **MUST NOT** treat absence
+of the result in checkout state as cancellation; it relies on the next
+`update_checkout` to converge. Platforms **SHOULD** issue
+`update_checkout` immediately on receiving a successful result; if the
+platform receives a follow-up business response that still includes
+the same `id`, it **SHOULD** assume convergence is still in flight and
+**MAY** suppress re-rendering on a short debounce.
+
+If the platform reports cancellation or error, the business **MAY**
+re-emit the action (possibly with a different `id`, `url`, or
+`display`), substitute a different recovery path, or escalate the
+checkout to `requires_escalation` with a `continue_url`.
+
+### Action Lifecycle
+
+The same action `id` may appear in multiple business responses while
+the platform is converging. The following table is the normative state
+view from both sides:
+
+| Phase              | Business sees                                                        | Platform sees                                                                       | Next transition trigger                                                                                |
+| :----------------- | :------------------------------------------------------------------- | :---------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------- |
+| **Emitted**        | Action is included in the response `actions` array.                  | Receives the action in the response and selects a rendering surface per `display`.  | Platform begins rendering.                                                                             |
+| **In flight**      | Continues to include the same action `id` in subsequent responses until the result is observed at `result_path`. | Surface is mounted; awaiting `postMessage` or return-URL callback. May enforce `expires_at`. | Surface produces a result (success or error envelope), surface is abandoned, or `expires_at` elapses.   |
+| **Resolved**       | Observes the value written at `result_path` in the next `update_checkout` call. | Has issued `update_checkout` with the value at `result_path` (when `result_path` is present). | Business **MUST** omit the action from subsequent responses.                                            |
+| **Abandoned**      | Receives `update_checkout` with no value at `result_path` (or no `update_checkout` for fire-and-forget). May receive an `update_checkout` carrying the platform's error envelope on a path the capability protocol designates. | Has reported `dev.ucp.action.abandoned`, `dev.ucp.action.failed`, or `dev.ucp.action.unsupported`. | Business **MAY** re-emit (possibly with a new `id`, `url`, or `display`), substitute a recoverable path, or escalate via `continue_url`. |
+| **Garbage-collected** | Action is no longer present in any response.                       | Discards any pending surface state for that `id`.                                   | Terminal.                                                                                              |
+
+**Convergence note.** Between the platform receiving the surface
+result and issuing the corresponding `update_checkout`, the business
+cannot observe resolution. Re-emission of the same `id` in this window
+is expected — platforms **SHOULD** suppress re-rendering on a short
+debounce, and businesses **MUST NOT** treat absence of the value as
+cancellation until they have observed an explicit abandonment signal.
+
+### Security
+
+Surfaces rendered to satisfy actions inherit the sandboxing model
+defined in [Embedded Protocol — Sandboxing](embedded-protocol.md) and
+**MUST NOT** be implemented as a parallel surface. In particular:
+
+* On web, the platform **MUST** sandbox the iframe and apply
+    `credentialless` per the Embedded Protocol contract. On native
+    platforms, the equivalent surface (in-app browser, system browser,
+    webview) **MUST** isolate the action context from any persistent
+    buyer session held by the platform.
+* Businesses **MUST** set `frame-ancestors` on the action URL to permit
+    only the platform origins they trust. Native platforms are out of
+    scope of `frame-ancestors`; businesses **SHOULD** treat the
+    `action.url` origin as a public surface and not embed buyer-bound
+    credentials at that origin.
+* The trust boundary for postMessage is `action.id` correlation as
+    described in [Frame Transport](#frame-transport-postmessage); origin
+    equality is defense in depth.
+
+For redirect-form actions, the platform **MUST** treat the return URL as
+the trust boundary: only requests landing on the platform's own origin
+with a matching `ucp_action_id` are accepted.
+
+### Out-of-Band Flows
+
+Some authentication flows have no buyer-rendered surface — for example,
+out-of-band approval via a banking app, or push-notification
+confirmation. These are **out of scope** for `actions` in this
+specification: every action **MUST** have a `url` and a `display.form`
+the platform can render.
+
+Businesses with out-of-band requirements have two supported paths:
+
+* **Server-mediated resolution.** The business or its handler
+    establishes a side channel (webhook, server callback) and surfaces
+    the result via a subsequent capability response — no action is
+    emitted. The platform sees the resolution as ordinary state
+    convergence.
+* **Full escalation.** The business returns `requires_escalation` with
+    `continue_url`, taking over the buyer experience for the duration
+    of the out-of-band step.
+
+Future revisions **MAY** introduce a non-URL action variant (e.g., a
+"waiting state" surface) once cross-protocol patterns stabilize. The
+URL-required shape is deliberate today: it keeps the v1 primitive
+small enough to be implemented uniformly.
+
+### Action Codes
+
+Action codes use reverse-domain naming, mirroring the convention used
+for [signals](overview.md#signals). A code is owned by the capability
+or handler protocol that defines its semantics — **not** by the
+Checkout capability itself. Checkout transports the action; the
+defining protocol specifies what the URL renders, what the result
+shape is, and where `result_path` is expected to point.
+
+**Checkout-owned codes** are listed below — codes whose semantics are
+defined directly by this specification because they apply across
+payment handlers and other extensions:
+
+| Code                       | Description                                                              |
+| :------------------------- | :----------------------------------------------------------------------- |
+| `dev.ucp.checkout.captcha` | Render a captcha widget; result is an opaque third-party verification token suitable for relaying as a signal. |
+
+**Illustrative codes owned by other protocols.** The following are
+examples of action codes that other protocols are expected to define
+and emit through the Checkout `actions` array. They are listed here to
+illustrate the shape of actions in real payment flows — they are
+**not** defined by this specification. The payment-handler protocol is
+the normative source for these.
+
+| Code (illustrative)                 | Likely owning protocol | Description                                                                |
+| :---------------------------------- | :--------------------- | :------------------------------------------------------------------------- |
+| `dev.ucp.payment.device_data`       | Payment handler        | Collect device or browser fingerprint data via an invisible pixel.         |
+| `dev.ucp.payment.frame_challenge`   | Payment handler        | Render a hosted challenge UI (e.g., 3DS, step-up authentication).          |
+| `dev.ucp.payment.offsite_authorization` | Payment handler   | Hand the buyer to an offsite payment provider; result is a payment credential. |
+
+Businesses **MAY** define custom codes in their own reverse-domain
+namespace for domain-specific actions. Platforms **SHOULD** handle
+unknown codes by rendering the action per `display` and forwarding the
+result to `result_path`, even when they don't recognize the semantic
+intent.
+
+**Composition with other protocols.** The payment-handler protocol is
+expected to define its own normative action set for card-present
+flows — device data collection, 3DS / step-up challenge, offsite
+authorization, and similar — using this primitive as the transport.
+That protocol owns the URL contract, the result shape, and the
+recoverable error vocabulary for those codes; this specification owns
+only the envelope, the lifecycle, and the security model. Other
+capabilities (loyalty step-up, identity verification, age gating) are
+expected to compose in the same way.
+
+### Examples
+
+Actions appear under the top-level `actions` array on the checkout
+response:
+
+```json
+{
+    "ucp": { "version": "{{ ucp_version }}", "status": "success" },
+    "id": "chk_abc123",
+    "status": "incomplete",
+    "actions": [ /* ... action entries ... */ ]
+}
+```
+
+**Device data pixel (invisible, optional, fire-and-forget):**
+
+```json
+{
+    "id": "act_dd_01HZX9TZK8Q1J5N3D7P2VQ4F0M",
+    "code": "dev.ucp.payment.device_data",
+    "severity": "optional",
+    "url": "https://psp.example.com/device-data/sess_xyz",
+    "display": { "form": "invisible" }
+}
+```
+
+**3DS challenge (modal, required).** The ACS lives on a different
+origin than `url`; the business's `url` page is the same-origin relay
+that re-emits the ACS result via `postMessage`:
+
+```json
+{
+    "id": "act_3ds_01HZXA8B2P3W7Y9C6V1K0NMR4D",
+    "code": "dev.ucp.payment.frame_challenge",
+    "severity": "requires_buyer_input",
+    "url": "https://psp.example.com/3ds-relay/sess_xyz",
+    "expires_at": "2026-05-19T20:30:00Z",
+    "result_path": "$.payment.instruments[0].challenge_complete",
+    "display": { "form": "modal", "width": 400, "height": 600 }
+}
+```
+
+**Captcha (inline, recoverable).** The result is a third-party
+verification token the platform relays as a signal:
+
+```json
+{
+    "id": "act_cap_01HZXAH9N5T8K2R6Y3J7BFQ4M8",
+    "code": "dev.ucp.checkout.captcha",
+    "severity": "recoverable",
+    "url": "https://captcha.example.com/widget/abc",
+    "result_path": "$.signals['com.example.captcha_token']",
+    "display": { "form": "inline", "width": 300, "height": 80 }
+}
+```
+
+**Offsite payment (redirect, required):**
+
+```json
+{
+    "id": "act_off_01HZXAS4R7M1V3P8K0H9DCNB2L",
+    "code": "dev.ucp.payment.offsite_authorization",
+    "severity": "requires_buyer_input",
+    "url": "https://merchant.example.com/paypal-return/sess_xyz",
+    "result_path": "$.payment.instruments[0].credential",
+    "display": { "form": "redirect" }
+}
+```
+
 ## Continue URL
 
 The `continue_url` field enables checkout handoff from platform to business UI,
@@ -735,6 +1228,10 @@ field or omitting them.
 ### Message Warning
 
 {{ schema_fields('types/message_warning', 'checkout') }}
+
+### Action
+
+{{ schema_fields('types/action', 'checkout') }}
 
 ### Payment
 

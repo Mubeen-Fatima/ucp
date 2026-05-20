@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ucp.dev/schemas/common/types/action.json",
+  "title": "Action",
+  "type": "object",
+  "description": "Imperative directive from a business to a platform requesting a scoped interaction — typically rendering a URL — and optionally attaching a result to checkout state at a business-specified path. Actions are not messages: they carry no buyer-facing display content. They share the severity vocabulary used by messages so both can flow through a single prioritization stack.",
+  "required": [
+    "id",
+    "code",
+    "severity",
+    "url",
+    "display"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique, unguessable identifier for this action. Echoed back in the result envelope and used by the platform to correlate the result against the outstanding action — origin checks are defense in depth, not the trust boundary. Treat this value as the action's capability token."
+    },
+    "code": {
+      "type": "string",
+      "description": "Reverse-domain identifier for the action category. Codes are owned by the capability or handler protocol that defines the action's semantics — not by checkout. The Checkout capability owns checkout-level codes (see standard codes in the checkout specification); payment-shaped codes (3DS step-up, device data, offsite payment auth) are owned by the payment-handler protocol that emits them. Freeform codes in vendor reverse-domain namespaces are permitted.",
+      "examples": [
+        "dev.ucp.checkout.captcha",
+        "dev.ucp.payment.device_data",
+        "dev.ucp.payment.frame_challenge",
+        "dev.ucp.payment.offsite_authorization"
+      ]
+    },
+    "severity": {
+      "type": "string",
+      "enum": [
+        "optional",
+        "recoverable",
+        "requires_buyer_input"
+      ],
+      "description": "Urgency of the action. 'optional': platform MAY complete for better outcomes; non-blocking. 'recoverable': platform MUST complete (or resolve through another recoverable path) to advance; may be retried. 'requires_buyer_input': platform MUST complete; if it cannot render the action, it MUST escalate via continue_url. Actions with 'requires_buyer_input' severity contribute to 'status: requires_escalation'."
+    },
+    "url": {
+      "type": "string",
+      "format": "uri",
+      "description": "The URL to render or navigate to. MUST use the https scheme. The business is responsible for the same-origin postMessage contract on this URL — see specification §Result Transport for the cross-origin relay requirement."
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 timestamp after which the platform SHOULD stop rendering the action and treat it as abandoned. When omitted, the business imposes no deadline and the platform MAY apply its own (e.g., a default surface timeout). When present, platforms MUST emit a 'dev.ucp.action.abandoned' result if the deadline passes without a callback."
+    },
+    "result_path": {
+      "type": "string",
+      "description": "RFC 9535 JSONPath identifying where the platform MUST attach the result value in the next update_checkout call (e.g., $.payment.instruments[0].credential). Omitted for fire-and-forget actions (e.g., device-data pixels) that have no structured return value. MUST NOT target $.signals.* unless the action result is an independently verifiable third-party attestation that the platform is relaying — buyer-asserted values MUST NOT be written to signals."
+    },
+    "display": {
+      "type": "object",
+      "description": "Rendering form and presentation hints. 'form' is required so that absence of a field never implicitly determines a rendering behavior.",
+      "required": [
+        "form"
+      ],
+      "properties": {
+        "form": {
+          "type": "string",
+          "enum": [
+            "invisible",
+            "inline",
+            "modal",
+            "full_page",
+            "redirect"
+          ],
+          "description": "Rendering form. Describes the surface the platform must provide; on web each form is naturally realized by an iframe (or top-level navigation for 'redirect'), on native platforms the equivalent surface applies. 'invisible': mount the URL with no visible presence (offscreen iframe / headless webview); appropriate for data-collection pixels. 'inline': render the surface in the checkout layout flow. 'modal': render the surface as a blocking modal overlay. 'full_page': surface takes the full viewport. 'redirect': platform navigates the buyer's top-level context to the URL; result returns via the return-URL contract instead of postMessage."
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Suggested width in CSS pixels. Platforms SHOULD honor this hint but MAY override for accessibility, responsive layout, or viewport constraints. Not meaningful for 'invisible' or 'redirect' forms."
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Suggested height in CSS pixels. Platforms SHOULD honor this hint but MAY override for accessibility, responsive layout, or viewport constraints. Not meaningful for 'invisible' or 'redirect' forms."
+        }
+      }
+    }
+  }
+}

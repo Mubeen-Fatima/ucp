@@ -93,6 +93,14 @@
       "description": "List of messages with error and info about the checkout session state.",
       "ucp_request": "omit"
     },
+    "actions": {
+      "type": "array",
+      "items": {
+        "$ref": "../common/types/action.json"
+      },
+      "description": "List of platform-side interactions the business is directing (e.g., 3DS challenge, captcha, device-data collection, offsite payment). The platform renders each action per its display hints, attaches the result at the action's result_path in the next update_checkout call, and the business omits the action once resolved. See specification for severity semantics and result transport.",
+      "ucp_request": "omit"
+    },
     "links": {
       "type": "array",
       "items": {
